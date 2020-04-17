@@ -4,12 +4,7 @@ CC = gcc
 
 CFLAGS = -Wall -g -fpic
 
-ARCH := $(shell getconf LONG_BIT)
 
-LIB_32 := ~/CPE453/A1/lib
-LIB_64 := ~/CPE453/A1/lib64
-
-LIB := $(LIB_$(ARCH))
 
 intel-all: lib/libmalloc.so lib64/libmalloc.so
 
@@ -29,4 +24,4 @@ malloc32.o: malloc.c
 	$(CC) $(CFLAGS) -m32 -c -o malloc32.o malloc.c
 
 malloc64.o: malloc.c
-	$(CC) $(CFLAGS) -m64-c -o malloc64.o malloc.c
+	$(CC) $(CFLAGS) -m64 -c -o malloc64.o malloc.c

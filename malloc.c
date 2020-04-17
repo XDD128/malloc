@@ -9,14 +9,13 @@
 
 #define ALIGN_SIZE 16
 #define CHUNK_SIZE 65536
-
+#define MSG_SIZE 100
 void *first_header = NULL;
 char *last_block = NULL;
-void *current_ceiling;
 void *current_alloc_break;
 
-char DEBUG_MODE = 0;
-
+int DEBUG_MODE = 0;
+char err_msg[MSG_SIZE];
 
 /*
 TODO: make sbrk automator at the end, modulo the size and add it so we can 
@@ -25,7 +24,6 @@ allocate more memory
 struct header{
 
     size_t alloc_size;
-    size_t this_chunk_size;
     struct header *prev;
     struct header *next;
     int free_flag;
@@ -37,9 +35,12 @@ struct header *merge_with_next(struct header *current){
     size_t total_chunk_size = sizeof(struct header) + 
     current -> next -> alloc_size;
     current -> alloc_size += total_chunk_size;
-    current -> this_chunk_size += total_chunk_size;
     current -> next = (current -> next -> next);
 
+    if (current->next){
+        current->next->prev = current;
+    }
+    
     return current;
 }
 
@@ -47,7 +48,7 @@ struct header *merge_with_next(struct header *current){
 /*this also only works with free, a different one must be used with realloc 
 cause the flag*/
 struct header *merge(struct header *current){
-    while (current->next && current->free_flag == 1){
+    while (current->next && current->next->free_flag == 1){
         merge_with_next(current);
     }
 
@@ -58,6 +59,12 @@ struct header *merge(struct header *current){
     return current;
 }
 
+struct header *find_last_header(struct header *current){
+    while (current->next){
+        current = current->next;
+    }
+    return current;
+}
 /*assume 16 byte aligned memory*/
 char *get_first_byte(char *ptr){
     size_t location = (size_t)ptr;
@@ -70,7 +77,7 @@ size_t align(size_t size){
 
 /*return a pointer to the header of the given block pointer*/
 struct header *get_header(void *block){
-    return (block - 1);
+    return (struct header*)((char*)block - sizeof(struct header));
 }
 
 int ask_for_more_memory(size_t size){
@@ -79,7 +86,7 @@ int ask_for_more_memory(size_t size){
     void *current_end = sbrk(0);
     void *next_sbrk = sbrk(ask_size);
     /*sbrk failed*/
-    if (next_sbrk == 1){
+    if (next_sbrk == -1){
         return 0;
     }
     else{
@@ -89,12 +96,12 @@ int ask_for_more_memory(size_t size){
 /*if needed, initially align the pointer to sbrk to something divisible by 16*/
 void align_sbrk(){
     void *current_sbrk = sbrk(0);
-    sbrk(ALIGN_SIZE - ((size_t)current_sbrk % ALIGN_SIZE));
+    sbrk((ALIGN_SIZE - ((size_t)current_sbrk % ALIGN_SIZE) + ALIGN_SIZE));
 }
 
-int distance_from_ceiling(void *ptr){
+size_t distance_from_ceiling(void *ptr){
     char *current_ceiling = sbrk(0);
-    return (int)(current_ceiling - (char*)ptr);
+    return (size_t)(current_ceiling - (char*)ptr);
 }
 
 /*distance from block to next header*/
@@ -116,6 +123,7 @@ void *malloc(size_t size){
 
     /*initialize globals if first call to malloc*/
     if (!first_header){
+        align_sbrk();
         DEBUG_MODE = getenv("DEBUG_MALLOC");
         /*This is where the first chunk of memory will start*/
         this_header = sbrk(0);
@@ -163,8 +171,9 @@ void *malloc(size_t size){
         if (this_header == NULL)
         {
             void *current_ceiling = sbrk(0);
-            struct header *possible_header = ((char*)(prev_header + 1) + 
-            prev_header -> alloc_size);
+            struct header *possible_header = 
+            (struct header*)
+            ((char*)(prev_header + 1) + prev_header -> alloc_size);
             
             /*if the next place we can put the pointer to the next block is 
             sizeable enough*/
@@ -205,6 +214,7 @@ void *malloc(size_t size){
 
 
             size_t total_chunk_size = size_of_total_chunk(this_header);
+            /*
             if (total_chunk_size - this_header->alloc_size
              >= (sizeof(struct header))){
                 struct header *next_free_header = 
@@ -216,20 +226,25 @@ void *malloc(size_t size){
                 (this_header->alloc_size + sizeof(struct header)); 
                 /*put this new header between the two existing ones
                 in the linked list*/
-            
+            /*
                 next_free_header -> next = this_header -> next;
                 next_free_header -> next -> prev = next_free_header;
-                this_free_header -> next = next_free_header;
+                this_header -> next = next_free_header;
 
             }
-            return (this_header + 1);
+            */
+            
         }
 
 
-        /*CASE 1: find a header+memory block suitable for
-         this call, size of block <= requested size*/
     }
-    
+    if (DEBUG_MODE){
+        snprintf(err_msg, MSG_SIZE, "malloc(%d)     =>  (ptr=%p, size=%d",
+        size, this_header+1, size);
+
+        fputs(err_msg, stderr);
+    }
+
     return (this_header + 1);
 }
 
@@ -239,6 +254,13 @@ void *calloc(size_t nmemb, size_t size){
     if (this_block != NULL){
         memset(this_block, 0, total_size);
     }
+
+    if (DEBUG_MODE){
+        snprintf(err_msg, MSG_SIZE, "calloc(%d)     =>  (ptr=%p, size=%d",
+        size, this_block, size);
+
+        fputs(err_msg, stderr);
+    }
     return this_block;
 }
 
@@ -246,6 +268,8 @@ void free(void *ptr){
     if (ptr == NULL){
         return NULL;
     }
+
+
     struct header *this_header = get_header(ptr);
     this_header -> free_flag = 1;
 
@@ -255,21 +279,86 @@ void free(void *ptr){
     }
     /*merge prev and next blocks if they are also freed*/
     merge(this_header);
+    if (DEBUG_MODE){
+        snprintf(err_msg, MSG_SIZE, "free(%p)", ptr);
+
+        fputs(err_msg, stderr);
+    }
 }
 
 void *realloc(void *ptr, size_t size){
     /*merge(ptr);*/
     if (!ptr){
-        return NULL;
+        return malloc(size);
     }
     /*behaves as free*/
-    if (size = 0){
+    if (size == 0 && ptr){
         free(ptr);
         return;
     }
+    struct header *this_header = get_header(ptr);
+    /*if this is the last pointer*/
+    if ((this_header -> next) == NULL){
 
-    if (NULL){
+        /*if the size is less*/
+        if (align(size) <= this_header -> alloc_size){
+            this_header -> alloc_size = align(size);
+            return this_header + 1;
+        }
+        if(!ask_for_more_memory(size - this_header -> alloc_size)){
+            return NULL;
+        }
+        this_header -> alloc_size = align(size);
+        return this_header + 1;
+    }
+    /*we are between two contiguous blocks*/
+    else{
+        size_t total_chunk_size = size_of_total_chunk(this_header);
+                /*if the size is less*/
+        if (align(size) <= this_header -> alloc_size){
+            this_header -> alloc_size = align(size);
+            return this_header + 1;
+        }
+
+        
+        if (total_chunk_size < align(size)){
+            struct header *last_header = find_last_header(this_header);
+            if(!ask_for_more_memory(size)){
+                return NULL;
+            }
+
+            struct header *new_realloc_header = 
+            ((char*)(last_header + 1)) + last_header->alloc_size;  
+
+            memcpy((new_realloc_header + 1), (this_header + 1), 
+            this_header->alloc_size);
+
+            
+
+            /*memcpy into this new chunk*/
+            new_realloc_header -> prev = last_header;
+            new_realloc_header -> next = NULL;
+            new_realloc_header -> alloc_size = align(size);
+            new_realloc_header -> free_flag = 0;
+
+            free(this_header);
+
+            return new_realloc_header + 1;
+        }
+        /*we can reallocate in this existing block*/
+        else{
+            this_header -> alloc_size = align(size);
+            return this_header + 1;
+        }
+
 
     }
+    if (DEBUG_MODE){
+        snprintf(err_msg, MSG_SIZE, "calloc(%d)     =>  (ptr=%p, size=%d",
+        size, this_header+1, size);
+
+        fputs(err_msg, stderr);
+    }
+
 
 }
